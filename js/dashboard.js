@@ -27,23 +27,36 @@ const statusLabel = { running: 'Operando', idle: 'Ociosa', stopped: 'Parada', ma
 const unitLabel = { hora: 'pçs/h', segundo: 'pçs/s' };
 
 // ============ PERSISTÊNCIA ============
-function loadMachines() {
+async function loadMachines() {
     try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (raw) {
-            const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed) && parsed.length) return parsed;
+        const snapshot = await window.db.collection('machines').get();
+        if (snapshot.empty) {
+            // Se o banco estiver vazio, retorna a lista padrão
+            return JSON.parse(JSON.stringify(DEFAULT_MACHINES));
         }
-    } catch (e) { console.warn('Falha ao carregar máquinas', e); }
-    return JSON.parse(JSON.stringify(DEFAULT_MACHINES));
+        const loaded = [];
+        snapshot.forEach(doc => {
+            loaded.push(doc.data());
+        });
+        return loaded;
+    } catch (e) {
+        console.error('Erro ao carregar do Firebase:', e);
+        return JSON.parse(JSON.stringify(DEFAULT_MACHINES));
+    }
 }
 
-function saveMachines() {
+async function saveMachines() {
     try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(machines));
-    } catch (e) { console.warn('Falha ao salvar máquinas', e); }
+        // Como a função é async, usamos Promise.all para salvar todas de uma vez
+        const promises = machines.map(machine => {
+            return window.db.collection('machines').doc(machine.id).set(machine);
+        });
+        await Promise.all(promises);
+        // console.log('Máquinas salvas no Firebase!'); // Descomente para testar
+    } catch (e) {
+        console.error('Erro ao salvar no Firebase:', e);
+    }
 }
-
 // ============ HELPERS ============
 function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 function nowStr() { return new Date().toLocaleTimeString('pt-BR'); }
@@ -310,11 +323,20 @@ function editMachine(id) {
     switchView('register');
 }
 
-function deleteMachine(id) {
+async function deleteMachine(id) {
     if (!confirm('Excluir a máquina ' + id + '? Essa ação não pode ser desfeita.')) return;
-    machines = machines.filter(m => m.id !== id);
-    saveMachines();
-    refreshAll();
+    
+    try {
+        // 1. Apaga do Firebase
+        await window.db.collection('machines').doc(id).delete();
+        
+        // 2. Apaga da memória local do site e atualiza a tela
+        machines = machines.filter(m => m.id !== id);
+        refreshAll();
+    } catch (e) {
+        console.error('Erro ao deletar do Firebase:', e);
+        alert('Erro ao deletar a máquina.');
+    }
 }
 
 function resetForm() {
@@ -384,7 +406,11 @@ function refreshAll() {
     renderEnergyPerMachineChart();
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    // 1. Carrega do Firebase primeiro
+    machines = await loadMachines();
+    
+    // 2. Depois inicializa a tela
     initCharts();
     refreshAll();
     setText('clock', nowStr());
